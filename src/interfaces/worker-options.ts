@@ -26,6 +26,7 @@ export interface WorkerOptions extends QueueBaseOptions {
   lockDuration?: number;
   lockRenewTime?: number;
   runRetryDelay?: number;
+  getOffset?: () => number;
   settings?: AdvancedOptions; // FIXME only backoffStrategies is used
 }
 

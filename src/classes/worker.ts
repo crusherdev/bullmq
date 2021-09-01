@@ -12,6 +12,7 @@ import { Scripts } from './scripts';
 import { v4 } from 'uuid';
 import { TimerManager } from './timer-manager';
 import { clientCommandMessageReg, delay, isRedisInstance } from '../utils';
+import Timeout = NodeJS.Timeout;
 
 // note: sandboxed processors would also like to define concurrency per process
 // for better resource utilization.
@@ -136,6 +137,33 @@ export class Worker<
     });
   }
 
+  private async canGoOn(offset: number, client: Redis) {
+    const waitCount = await client.llen(this.keys.wait);
+    return waitCount >= offset;
+  }
+
+  private waitUntilCanGoOn(offset: any) {
+    return new Promise(async (resolve, reject) => {
+      const client = await this.client;
+
+      const checkIfCanGoOn = async (_interval?: Timeout) => {
+        const isAlright = await this.canGoOn(
+          offset ? offset() : 0,
+          client as any,
+        );
+        if (isAlright) {
+          if (_interval) clearInterval(_interval);
+          resolve(true);
+        }
+      };
+
+      await checkIfCanGoOn();
+      const _interval = setInterval(async () => {
+        await checkIfCanGoOn(_interval);
+      }, 1000);
+    });
+  }
+
   private async run() {
     const client = await this.blockingConnection.client;
 
@@ -166,6 +194,8 @@ export class Worker<
     );
 
     while (!this.closing) {
+      await this.waitUntilCanGoOn(this.opts.getOffset);
+
       this.running = true;
       if (processing.size < opts.concurrency) {
         const token = tokens.pop();
