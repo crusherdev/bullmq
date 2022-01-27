@@ -9,17 +9,17 @@ Returns a promise the resolves when the job has finished. (completed or failed).
 <b>Signature:</b>
 
 ```typescript
-waitUntilFinished(queueEvents: QueueEvents, ttl?: number): Promise<R>;
+waitUntilFinished(queueEvents: QueueEvents, ttl?: number): Promise<ReturnType>;
 ```
 
 ## Parameters
 
 |  Parameter | Type | Description |
 |  --- | --- | --- |
-|  queueEvents | [QueueEvents](./bullmq.queueevents.md) |  |
-|  ttl | number |  |
+|  queueEvents | [QueueEvents](./bullmq.queueevents.md) | Instance of QueueEvents. |
+|  ttl | number | Time in milliseconds to wait for job to finish before timing out. |
 
 <b>Returns:</b>
 
-Promise&lt;R&gt;
+Promise&lt;ReturnType&gt;
 

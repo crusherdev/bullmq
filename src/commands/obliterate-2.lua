@@ -15,7 +15,7 @@
 
 -- The queue needs to be "paused" or it will return an error
 -- If the queue has currently active jobs then the script by default will return error,
--- however this behaviour can be overrided using the `force` option.
+-- however this behaviour can be overrided using the 'force' option.
 local maxCount = tonumber(ARGV[1])
 local baseKey = KEYS[2]
 
@@ -32,23 +32,29 @@ local function getSetItems(keyName, max)
     return rcall('SMEMBERS', keyName, 0, max)
 end
 
-local function removeJobs(parentKey, keys)
+--- @include "includes/removeParentDependencyKey"
+
+local function removeJobs(keys)
     for i, key in ipairs(keys) do
-        rcall("DEL", baseKey .. key)
-        rcall("DEL", baseKey .. key .. ':logs')
+        local jobKey = baseKey .. key
+        removeParentDependencyKey(jobKey)
+        rcall("DEL", jobKey)
+        rcall("DEL", jobKey .. ':logs')
+        rcall("DEL", jobKey .. ':dependencies')
+        rcall("DEL", jobKey .. ':processed')
     end
     maxCount = maxCount - #keys
 end
 
 local function removeListJobs(keyName, max)
     local jobs = getListItems(keyName, max)
-    removeJobs(keyName, jobs)
+    removeJobs(jobs)
     rcall("LTRIM", keyName, #jobs, -1)
 end
 
 local function removeZSetJobs(keyName, max)
     local jobs = getZSetItems(keyName, max)
-    removeJobs(keyName, jobs)
+    removeJobs(jobs)
     if(#jobs > 0) then
         rcall("ZREM", keyName, unpack(jobs))
     end
@@ -70,19 +76,13 @@ local activeKey = baseKey .. 'active'
 local activeJobs = getListItems(activeKey, maxCount)
 if (#activeJobs > 0) then
     if(ARGV[2] == "") then 
-        return -2 -- Error, ExistsActiveJobs
+        return -2 -- Error, ExistActiveJobs
     end
 end
 
 removeLockKeys(activeJobs)
-removeJobs(activeKey, activeJobs)
+removeJobs(activeJobs)
 rcall("LTRIM", activeKey, #activeJobs, -1)
-if(maxCount <= 0) then
-    return 1
-end
-
-local waitKey = baseKey .. 'paused'
-removeListJobs(waitKey, maxCount)
 if(maxCount <= 0) then
     return 1
 end
@@ -101,6 +101,12 @@ end
 
 local failedKey = baseKey .. 'failed'
 removeZSetJobs(failedKey, maxCount)
+if(maxCount <= 0) then
+    return 1
+end
+
+local waitKey = baseKey .. 'paused'
+removeListJobs(waitKey, maxCount)
 if(maxCount <= 0) then
     return 1
 end

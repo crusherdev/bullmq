@@ -1,5 +1,6 @@
 module.exports = {
   exit: true,
-  file: ['./src/mocha.setup.ts'],
-  spec: ['./src/**/test_*.ts'],
+  file: ['./mocha.setup.ts'],
+  spec: ['./tests/test_*.ts'],
+  timeout: 4000,
 };

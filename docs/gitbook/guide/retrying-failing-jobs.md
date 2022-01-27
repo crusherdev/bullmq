@@ -9,9 +9,10 @@ For BullMQ to reschedule failed jobs, make sure you create a `QueueScheduler` fo
 The code below shows how to specify a "exponential" backoff function with a 1 second delay as seed value, so it will retry at most 3 times spaced after 1 second, 2 seconds and 4 seconds:
 
 ```typescript
-import { Queue } from 'bullmq';
+import { Queue, QueueScheduler } from 'bullmq';
 
 const myQueue = new Queue('foo');
+const myQueueScheduler = new QueueScheduler('foo');
 
 await queue.add(
   'test-retry',
@@ -29,22 +30,21 @@ await queue.add(
 You can also define it in the queue's `defaultJobOptions`, and it will apply to all jobs added to the queue, unless overridden. For example:
 
 ```typescript
-import { Queue } from "bullmq";
+import { Queue, QueueScheduler } from 'bullmq';
 
-const myQueue = new Queue("foo", {
+const myQueue = new Queue('foo', {
   defaultJobOptions: {
     attempts: 3,
     backoff: {
-      type: "exponential",
-      delay: 1000
-    }
-  }
+      type: 'exponential',
+      delay: 1000,
+    },
+  },
 });
 
-await queue.add(
-  "test-retry",
-  { foo: "bar" }
-);
+const myQueueScheduler = new QueueScheduler('foo');
+
+await queue.add('test-retry', { foo: 'bar' });
 ```
 
 The current built-in backoff functions are "exponential" and "fixed".
@@ -56,19 +56,15 @@ If you want to define your custom backoff you need to define it at the worker:
 ```typescript
 import { Worker } from 'bullmq';
 
-const worker = new Worker(
-  'foo',
-  async job => doSomeProcessing(),
-  {
-    settings: {
-      backoffStrategies: {
-        custom(attemptsMade: number) {
-          return attemptsMade * 1000;
-        },
+const worker = new Worker('foo', async job => doSomeProcessing(), {
+  settings: {
+    backoffStrategies: {
+      custom(attemptsMade: number) {
+        return attemptsMade * 1000;
       },
     },
   },
-);
+});
 ```
 
 You can then use your "custom" strategy when adding jobs:
@@ -89,4 +85,3 @@ await queue.add(
   },
 );
 ```
-

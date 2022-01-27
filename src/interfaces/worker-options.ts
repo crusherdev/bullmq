@@ -1,5 +1,7 @@
-import { Job } from '../classes';
-import { AdvancedOptions, QueueBaseOptions, RateLimiterOptions } from './';
+import { Job } from '../classes/job';
+import { AdvancedOptions } from './advanced-options';
+import { QueueBaseOptions } from './queue-options';
+import { RateLimiterOptions } from './rate-limiter-options';
 
 /**
  * An async function that receives `Job`s and handles them.
@@ -10,6 +12,10 @@ export type Processor<T = any, R = any, N extends string = string> = (
 ) => Promise<R>;
 
 export interface WorkerOptions extends QueueBaseOptions {
+  /**
+   * Condition to start processor at instance creation.
+   */
+  autorun?: boolean;
   /**
    * Amount of jobs that a single worker is allowed to work on
    * in parallel.

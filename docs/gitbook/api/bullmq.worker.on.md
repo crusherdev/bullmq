@@ -7,15 +7,15 @@
 <b>Signature:</b>
 
 ```typescript
-on(event: 'active', listener: (job: Job, prev: string) => void): this;
+on<U extends keyof WorkerListener>(event: U, listener: WorkerListener[U]): this;
 ```
 
 ## Parameters
 
 |  Parameter | Type | Description |
 |  --- | --- | --- |
-|  event | 'active' |  |
-|  listener | (job: [Job](./bullmq.job.md)<!-- -->, prev: string) =&gt; void |  |
+|  event | U |  |
+|  listener | [WorkerListener](./bullmq.workerlistener.md)<!-- -->\[U\] |  |
 
 <b>Returns:</b>
 

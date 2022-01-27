@@ -7,7 +7,7 @@
 <b>Signature:</b>
 
 ```typescript
-export declare class Job<T = any, R = any, N extends string = string> 
+export declare class Job<DataType = any, ReturnType = any, NameType extends string = string> 
 ```
 
 ## Constructors
@@ -21,19 +21,22 @@ export declare class Job<T = any, R = any, N extends string = string>
 |  Property | Modifiers | Type | Description |
 |  --- | --- | --- | --- |
 |  [attemptsMade](./bullmq.job.attemptsmade.md) |  | number | Number of attempts after the job has failed. |
-|  [data](./bullmq.job.data.md) |  | T | The payload for this job. |
+|  [data](./bullmq.job.data.md) |  | DataType | The payload for this job. |
 |  [failedReason](./bullmq.job.failedreason.md) |  | string | Reason for failing. |
 |  [finishedOn?](./bullmq.job.finishedon.md) |  | number | <i>(Optional)</i> Timestamp for when the job finished (completed or failed). |
 |  [id?](./bullmq.job.id.md) |  | string | <i>(Optional)</i> |
-|  [name](./bullmq.job.name.md) |  | N | The name of the Job |
+|  [name](./bullmq.job.name.md) |  | NameType | The name of the Job |
 |  [opts](./bullmq.job.opts.md) |  | [JobsOptions](./bullmq.jobsoptions.md) | The options object for this job. |
+|  [parent?](./bullmq.job.parent.md) |  | { id: string; queueKey: string; } | <i>(Optional)</i> |
 |  [parentKey?](./bullmq.job.parentkey.md) |  | string | <i>(Optional)</i> Fully qualified key (including the queue prefix) pointing to the parent of this job. |
 |  [processedOn?](./bullmq.job.processedon.md) |  | number | <i>(Optional)</i> Timestamp for when the job was processed. |
 |  [progress](./bullmq.job.progress.md) |  | number \| object | The progress a job has performed so far. |
+|  [queue](./bullmq.job.queue.md) |  | [MinimalQueue](./bullmq.minimalqueue.md) |  |
 |  [queueName](./bullmq.job.queuename.md) |  | string |  |
-|  [returnvalue](./bullmq.job.returnvalue.md) |  | R | The value returned by the processor when processing this job. |
+|  [returnvalue](./bullmq.job.returnvalue.md) |  | ReturnType | The value returned by the processor when processing this job. |
 |  [stacktrace](./bullmq.job.stacktrace.md) |  | string\[\] | Stacktrace for the error (for failed jobs). |
 |  [timestamp](./bullmq.job.timestamp.md) |  | number | Timestamp when the job was created (unless overridden with job options). |
+|  [toKey](./bullmq.job.tokey.md) |  | (type: string) =&gt; string |  |
 
 ## Methods
 
@@ -65,7 +68,7 @@ export declare class Job<T = any, R = any, N extends string = string>
 |  [moveToWaitingChildren(token, opts)](./bullmq.job.movetowaitingchildren.md) |  | Moves the job to the waiting-children set. |
 |  [promote()](./bullmq.job.promote.md) |  | Promotes a delayed job so that it starts to be processed as soon as possible. |
 |  [remove()](./bullmq.job.remove.md) |  | Completely remove the job from the queue. Note, this call will throw an exception if the job is being processed when the call is performed. |
-|  [retry(state)](./bullmq.job.retry.md) |  | Attempts to retry the job. Only a job that has failed can be retried. |
+|  [retry(state)](./bullmq.job.retry.md) |  | Attempts to retry the job. Only a job that has failed or completed can be retried. |
 |  [toJSON()](./bullmq.job.tojson.md) |  |  |
 |  [update(data)](./bullmq.job.update.md) |  | Updates a job's data |
 |  [updateProgress(progress)](./bullmq.job.updateprogress.md) |  | Updates a job's progress |

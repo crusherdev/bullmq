@@ -1,12 +1,17 @@
 import { EventEmitter } from 'events';
 import { Redis, Pipeline } from 'ioredis';
 import { v4 } from 'uuid';
-import { QueueBaseOptions } from '../interfaces/queue-options';
-import { FlowJob, FlowQueuesOpts, FlowOpts } from '../interfaces/flow-job';
+import {
+  FlowJob,
+  FlowQueuesOpts,
+  FlowOpts,
+  QueueBaseOptions,
+  RedisClient,
+} from '../interfaces';
 import { getParentKey, jobIdForGroup } from '../utils';
 import { Job } from './job';
 import { KeysMap, QueueKeys } from './queue-keys';
-import { RedisClient, RedisConnection } from './redis-connection';
+import { RedisConnection } from './redis-connection';
 
 export interface AddNodeOpts {
   multi: Pipeline;
@@ -190,7 +195,10 @@ export class FlowProducer extends EventEmitter {
    * @returns
    */
   private addNode({ multi, node, parent, queuesOpts }: AddNodeOpts): JobNode {
-    const queue = this.queueFromNode(node, new QueueKeys(node.prefix));
+    const queue = this.queueFromNode(
+      node,
+      new QueueKeys(node.prefix || this.opts.prefix),
+    );
     const queueOpts = queuesOpts && queuesOpts[node.queueName];
 
     const jobId = jobIdForGroup(node.opts, node.data, queueOpts) || v4();
@@ -211,7 +219,7 @@ export class FlowProducer extends EventEmitter {
     if (node.children && node.children.length > 0) {
       // Create parent job, will be a job in status "waiting-children".
       const parentId = jobId;
-      const queueKeysParent = new QueueKeys(node.prefix);
+      const queueKeysParent = new QueueKeys(node.prefix || this.opts.prefix);
       const waitChildrenKey = queueKeysParent.toKey(
         node.queueName,
         'waiting-children',
@@ -351,14 +359,14 @@ export class FlowProducer extends EventEmitter {
     };
   }
 
-  close() {
+  close(): Promise<void> {
     if (!this.closing) {
       this.closing = this.connection.close();
     }
     return this.closing;
   }
 
-  disconnect() {
+  disconnect(): Promise<void> {
     return this.connection.disconnect();
   }
 }

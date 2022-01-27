@@ -1,4 +1,4 @@
-import { JobsOptions } from '../interfaces';
+import { JobsOptions } from './jobs-options';
 import { ConnectionOptions } from './redis-options';
 
 export enum ClientType {
@@ -10,7 +10,15 @@ export enum ClientType {
  * Base Queue options
  */
 export interface QueueBaseOptions {
+  /**
+   * Options for connecting to a Redis instance.
+   */
   connection?: ConnectionOptions;
+
+  /**
+   * Specify if the connection is shared.
+   */
+  sharedConnection?: boolean;
 
   /**
    * Prefix for all queue keys.
@@ -55,6 +63,10 @@ export interface QueueOptions extends QueueBaseOptions {
  * Options for QueueEvents
  */
 export interface QueueEventsOptions extends QueueBaseOptions {
+  /**
+   * Condition to start listening to events at instance creation.
+   */
+  autorun?: boolean;
   /**
    * Last event Id. If provided it is possible to continue
    * consuming events from a known Id instead of from the last

@@ -1,33 +1,109 @@
 import * as fs from 'fs';
 import { Redis } from 'ioredis';
 import * as path from 'path';
-import { Processor, WorkerOptions, GetNextJobOptions } from '../interfaces';
+import { v4 } from 'uuid';
+import {
+  GetNextJobOptions,
+  JobJsonRaw,
+  Processor,
+  RedisClient,
+  WorkerOptions,
+} from '../interfaces';
+import {
+  clientCommandMessageReg,
+  delay,
+  DELAY_TIME_1,
+  isNotConnectionError,
+  isRedisInstance,
+} from '../utils';
 import { QueueBase } from './queue-base';
 import { Repeat } from './repeat';
 import { ChildPool } from './child-pool';
-import { Job, JobJsonRaw } from './job';
-import { RedisConnection, RedisClient } from './redis-connection';
+import { Job } from './job';
+import { RedisConnection } from './redis-connection';
 import sandbox from './sandbox';
 import { Scripts } from './scripts';
-import { v4 } from 'uuid';
 import { TimerManager } from './timer-manager';
-import { clientCommandMessageReg, delay, isRedisInstance } from '../utils';
 import Timeout = NodeJS.Timeout;
 
 // note: sandboxed processors would also like to define concurrency per process
 // for better resource utilization.
 
-export declare interface Worker {
-  on(event: 'active', listener: (job: Job, prev: string) => void): this;
-  on(event: 'completed', listener: (job: Job) => void): this;
-  on(event: 'drained', listener: () => void): this;
-  on(event: 'error', listener: (failedReason: Error) => void): this;
-  on(event: 'failed', listener: (job: Job, error: Error) => void): this;
-  on(
-    event: 'progress',
-    listener: (job: Job, progress: number | object) => void,
-  ): this;
-  on(event: string, listener: Function): this;
+export interface WorkerListener {
+  /**
+   * Listen to 'active' event.
+   *
+   * This event is triggered when a job enters the 'active' state.
+   */
+  active: (job: Job, prev: string) => void;
+
+  /**
+   * Listen to 'closing' event.
+   *
+   * This event is triggered when the worker is closed.
+   */
+  closed: () => void;
+
+  /**
+   * Listen to 'closing' event.
+   *
+   * This event is triggered when the worker is closing.
+   */
+  closing: (msg: string) => void;
+
+  /**
+   * Listen to 'completed' event.
+   *
+   * This event is triggered when a job has successfully completed.
+   */
+  completed: (job: Job, result: any, prev: string) => void;
+
+  /**
+   * Listen to 'drained' event.
+   *
+   * This event is triggered when the queue has drained the waiting list.
+   * Note that there could still be delayed jobs waiting their timers to expire
+   * and this event will still be triggered as long as the waiting list has emptied.
+   */
+  drained: () => void;
+
+  /**
+   * Listen to 'error' event.
+   *
+   * This event is triggered when an error is throw.
+   */
+  error: (failedReason: Error) => void;
+
+  /**
+   * Listen to 'failed' event.
+   *
+   * This event is triggered when a job has thrown an exception.
+   */
+  failed: (job: Job, error: Error, prev: string) => void;
+
+  /**
+   * Listen to 'paused' event.
+   *
+   * This event is triggered when the queue is paused.
+   */
+  paused: () => void;
+
+  /**
+   * Listen to 'progress' event.
+   *
+   * This event is triggered when a job updates it progress, i.e. the
+   * Job##updateProgress() method is called. This is useful to notify
+   * progress or any other data from within a processor to the rest of the
+   * world.
+   */
+  progress: (job: Job, progress: number | object) => void;
+
+  /**
+   * Listen to 'resumed' event.
+   *
+   * This event is triggered when the queue is resumed.
+   */
+  resumed: () => void;
 }
 
 /**
@@ -37,39 +113,49 @@ export declare interface Worker {
  *
  */
 export class Worker<
-  T = any,
-  R = any,
-  N extends string = string
+  DataType = any,
+  ResultType = any,
+  NameType extends string = string,
 > extends QueueBase {
   opts: WorkerOptions;
 
   private drained: boolean;
   private waiting = false;
   private running = false;
-  private processFn: Processor<T, R, N>;
+  private blockTimeout = 0;
+
+  protected processFn: Processor<DataType, ResultType, NameType>;
 
   private resumeWorker: () => void;
-  private paused: Promise<void>;
+  protected paused: Promise<void>;
   private _repeat: Repeat;
   private childPool: ChildPool;
-  private timerManager: TimerManager;
+  protected timerManager: TimerManager;
 
   private blockingConnection: RedisConnection;
 
-  private processing: Map<Promise<Job<T, R, N> | string>, string>; // { [index: number]: Promise<Job | void> } = {};
+  private processing: Map<
+    Promise<Job<DataType, ResultType, NameType> | string>,
+    string
+  >;
   constructor(
     name: string,
-    processor?: string | Processor<T, R, N>,
+    processor?: string | Processor<DataType, ResultType, NameType>,
     opts: WorkerOptions = {},
+    Connection?: typeof RedisConnection,
   ) {
-    super(name, opts);
+    super(
+      name,
+      { ...opts, sharedConnection: isRedisInstance(opts.connection) },
+      Connection,
+    );
 
     this.opts = {
-      // settings: {},
       drainDelay: 5,
       concurrency: 1,
       lockDuration: 30000,
       runRetryDelay: 15000,
+      autorun: true,
       ...this.opts,
     };
 
@@ -81,35 +167,93 @@ export class Worker<
         ? (<Redis>opts.connection).duplicate()
         : opts.connection,
     );
-    this.blockingConnection.on('error', this.emit.bind(this, 'error'));
+    this.blockingConnection.on('error', error => this.emit('error', error));
 
     if (processor) {
       if (typeof processor === 'function') {
         this.processFn = processor;
       } else {
         // SANDBOXED
-        const supportedFileTypes = ['.js', '.ts', '.flow'];
+        const supportedFileTypes = ['.js', '.ts', '.flow', '.cjs'];
         const processorFile =
           processor +
           (supportedFileTypes.includes(path.extname(processor)) ? '' : '.js');
 
         if (!fs.existsSync(processorFile)) {
-          // TODO are we forced to use sync api here?
           throw new Error(`File ${processorFile} does not exist`);
         }
 
-        this.childPool = this.childPool || new ChildPool();
-        this.processFn = sandbox<T, R, N>(processor, this.childPool).bind(this);
+        let masterFile = path.join(__dirname, './master.js');
+        try {
+          fs.statSync(masterFile); // would throw if file not exists
+        } catch (_) {
+          masterFile = path.join(process.cwd(), 'dist/cjs/classes/master.js');
+          fs.statSync(masterFile);
+        }
+
+        this.childPool = new ChildPool(masterFile);
+        this.processFn = sandbox<DataType, ResultType, NameType>(
+          processor,
+          this.childPool,
+        ).bind(this);
       }
       this.timerManager = new TimerManager();
 
-      this.run().catch(error => {
-        this.running = false;
-        console.error(error);
-      });
+      if (this.opts.autorun) {
+        this.run().catch(error => this.emit('error', error));
+      }
     }
 
     this.on('error', err => console.error(err));
+  }
+
+  emit<U extends keyof WorkerListener>(
+    event: U,
+    ...args: Parameters<WorkerListener[U]>
+  ): boolean {
+    return super.emit(event, ...args);
+  }
+
+  off<U extends keyof WorkerListener>(
+    eventName: U,
+    listener: WorkerListener[U],
+  ): this {
+    super.off(eventName, listener);
+    return this;
+  }
+
+  on<U extends keyof WorkerListener>(
+    event: U,
+    listener: WorkerListener[U],
+  ): this {
+    super.on(event, listener);
+    return this;
+  }
+
+  once<U extends keyof WorkerListener>(
+    event: U,
+    listener: WorkerListener[U],
+  ): this {
+    super.once(event, listener);
+    return this;
+  }
+
+  protected callProcessJob(
+    job: Job<DataType, ResultType, NameType>,
+    token: string,
+  ): Promise<ResultType> {
+    return this.processFn(job, token);
+  }
+
+  protected createJob(
+    data: JobJsonRaw,
+    jobId: string,
+  ): Job<DataType, ResultType, NameType> {
+    return Job.fromJSON(this, data, jobId) as Job<
+      DataType,
+      ResultType,
+      NameType
+    >;
   }
 
   /**
@@ -123,7 +267,7 @@ export class Worker<
     return this.blockingConnection.client;
   }
 
-  get repeat() {
+  get repeat(): Promise<Repeat> {
     return new Promise<Repeat>(async resolve => {
       if (!this._repeat) {
         const connection = await this.client;
@@ -152,7 +296,9 @@ export class Worker<
           client as any,
         );
         if (isAlright) {
-          if (_interval) clearInterval(_interval);
+          if (_interval) {
+            clearInterval(_interval);
+          }
           resolve(true);
         }
       };
@@ -164,79 +310,97 @@ export class Worker<
     });
   }
 
-  private async run() {
-    const client = await this.blockingConnection.client;
+  async run() {
+    if (this.processFn) {
+      if (!this.running) {
+        try {
+          this.running = true;
+          const client = await this.client;
 
-    if (this.closing) {
-      return;
-    }
+          if (this.closing) {
+            return;
+          }
 
-    // IDEA, How to store metadata associated to a worker.
-    // create a key from the worker ID associated to the given name.
-    // We keep a hash table bull:myqueue:workers where
-    // every worker is a hash key workername:workerId with json holding
-    // metadata of the worker. The worker key gets expired every 30 seconds or so, we renew the worker metadata.
-    //
-    try {
-      await client.client('setname', this.clientName());
-    } catch (err) {
-      if (!clientCommandMessageReg.test(err.message)) {
-        throw err;
-      }
-    }
+          // IDEA, How to store metadata associated to a worker.
+          // create a key from the worker ID associated to the given name.
+          // We keep a hash table bull:myqueue:workers where
+          // every worker is a hash key workername:workerId with json holding
+          // metadata of the worker. The worker key gets expired every 30 seconds or so, we renew the worker metadata.
+          //
+          try {
+            await client.client('setname', this.clientName());
+          } catch (err) {
+            if (!clientCommandMessageReg.test((<Error>err).message)) {
+              throw err;
+            }
+          }
 
-    const opts: WorkerOptions = <WorkerOptions>this.opts;
+          const opts: WorkerOptions = <WorkerOptions>this.opts;
 
-    const processing = (this.processing = new Map());
+          const processing = (this.processing = new Map());
 
-    const tokens: string[] = Array.from({ length: opts.concurrency }, () =>
-      v4(),
-    );
+          const tokens: string[] = Array.from(
+            { length: opts.concurrency },
+            () => v4(),
+          );
 
-    while (!this.closing) {
-      await this.waitUntilCanGoOn(this.opts.getOffset);
+          while (!this.closing) {
+            if (opts.getOffset) {
+              await this.waitUntilCanGoOn(opts.getOffset);
+            }
 
-      this.running = true;
-      if (processing.size < opts.concurrency) {
-        const token = tokens.pop();
-        processing.set(
-          this.retryIfFailed<Job<any, any, string>>(
-            () => this.getNextJob(token),
-            this.opts.runRetryDelay,
-          ),
-          token,
-        );
-      }
+            if (processing.size < opts.concurrency) {
+              const token = tokens.pop();
 
-      /*
-       * Get the first promise that completes
-       */
-      const promises = [...processing.keys()];
-      const completedIdx = await Promise.race(
-        promises.map((p, idx) => p.then(() => idx)),
-      );
+              processing.set(
+                this.retryIfFailed<Job<DataType, ResultType, NameType>>(
+                  () => this.getNextJob(token),
+                  this.opts.runRetryDelay,
+                ),
+                token,
+              );
+            }
 
-      const completed = promises[completedIdx];
+            /*
+             * Get the first promise that completes
+             */
+            const promises = [...processing.keys()];
+            const completedIdx = await Promise.race(
+              promises.map((p, idx) => p.then(() => idx)),
+            );
 
-      const token = processing.get(completed);
-      processing.delete(completed);
+            const completed = promises[completedIdx];
 
-      const job = await completed;
-      if (job) {
-        // reuse same token if next job is available to process
-        processing.set(
-          this.retryIfFailed<void | Job<any, any, string>>(
-            () => this.processJob(job, token),
-            this.opts.runRetryDelay,
-          ),
-          token,
-        );
+            const token = processing.get(completed);
+            processing.delete(completed);
+
+            const job = await completed;
+            if (job) {
+              // reuse same token if next job is available to process
+              processing.set(
+                this.retryIfFailed<void | Job<DataType, ResultType, NameType>>(
+                  () => this.processJob(job, token),
+                  this.opts.runRetryDelay,
+                ),
+                token,
+              );
+            } else {
+              tokens.push(token);
+            }
+          }
+          this.running = false;
+          return Promise.all([...processing.keys()]);
+        } catch (error) {
+          this.running = false;
+
+          throw error;
+        }
       } else {
-        tokens.push(token);
+        throw new Error('Worker is already running.');
       }
+    } else {
+      throw new Error('No process function is defined.');
     }
-    this.running = false;
-    return Promise.all([...processing.keys()]);
   }
 
   /**
@@ -260,16 +424,13 @@ export class Worker<
     if (this.drained && block) {
       try {
         const jobId = await this.waitForJob();
-
-        if (jobId) {
-          return this.moveToActive(token, jobId);
-        }
+        return this.moveToActive(token, jobId);
       } catch (err) {
         // Swallow error if locally paused or closing since we did force a disconnection
         if (
           !(
             (this.paused || this.closing) &&
-            err.message === 'Connection is closed.'
+            (<Error>err).message === 'Connection is closed.'
           )
         ) {
           throw err;
@@ -280,7 +441,10 @@ export class Worker<
     }
   }
 
-  private async moveToActive(token: string, jobId?: string) {
+  protected async moveToActive(
+    token: string,
+    jobId?: string,
+  ): Promise<Job<DataType, ResultType, NameType>> {
     const [jobData, id] = await Scripts.moveToActive(this, token, jobId);
     return this.nextJobFromJobData(jobData, id);
   }
@@ -297,48 +461,82 @@ export class Worker<
 
     try {
       this.waiting = true;
+
+      let blockTimeout = Math.max(
+        this.blockTimeout ? this.blockTimeout / 1000 : opts.drainDelay,
+        0.01,
+      );
+
+      // Only Redis v6.0.0 and above supports doubles as block time
+      blockTimeout =
+        this.blockingConnection.redisVersion < '6.0.0'
+          ? Math.ceil(blockTimeout)
+          : blockTimeout;
+
       jobId = await client.brpoplpush(
         this.keys.wait,
         this.keys.active,
-        opts.drainDelay,
+        blockTimeout,
       );
+    } catch (error) {
+      if (isNotConnectionError(<Error>error)) {
+        this.emit('error', <Error>error);
+      }
+      await this.delay();
     } finally {
       this.waiting = false;
     }
     return jobId;
   }
 
-  private async nextJobFromJobData(
+  /**
+   *
+   * This function is exposed only for testing purposes.
+   */
+  async delay(): Promise<void> {
+    await delay(DELAY_TIME_1);
+  }
+
+  protected async nextJobFromJobData(
     jobData?: JobJsonRaw | number,
     jobId?: string,
-  ) {
-    if (jobData) {
-      this.drained = false;
-
-      //
-      // Check if the queue is rate limited. jobData will be the amount
-      // of rate limited jobs.
-      //
-      if (typeof jobData === 'number') {
-        if (this.opts.limiter.workerDelay) {
-          const rateKeyExpirationTime = jobData;
-          await delay(rateKeyExpirationTime);
-        }
-      } else {
-        const job = Job.fromJSON(this, jobData, jobId);
-        if (job.opts.repeat) {
-          const repeat = await this.repeat;
-          await repeat.addNextRepeatableJob(job.name, job.data, job.opts);
-        }
-        return job;
+  ): Promise<Job<DataType, ResultType, NameType>> {
+    // NOTE: This is not really optimal in all cases since a new job would could arrive at the wait
+    // list and this worker will not start processing it directly.
+    // Best would be to emit drain and block for rateKeyExpirationTime
+    if (typeof jobData === 'number') {
+      if (!this.drained) {
+        this.emit('drained');
+        this.drained = true;
       }
+
+      // workerDelay left for backwards compatibility although not recommended to use.
+      if (this.opts?.limiter?.workerDelay) {
+        const rateKeyExpirationTime = jobData;
+        await delay(rateKeyExpirationTime);
+      } else {
+        this.blockTimeout = jobData;
+      }
+    } else if (jobData) {
+      this.drained = false;
+      const job = this.createJob(jobData, jobId);
+      if (job.opts.repeat) {
+        const repeat = await this.repeat;
+        await repeat.addNextRepeatableJob(job.name, job.data, job.opts);
+      }
+      return job;
     } else if (!this.drained) {
+      this.blockTimeout = 0;
+
       this.emit('drained');
       this.drained = true;
     }
   }
 
-  async processJob(job: Job<T, R, N>, token: string) {
+  async processJob(
+    job: Job<DataType, ResultType, NameType>,
+    token: string,
+  ): Promise<void | Job<DataType, ResultType, NameType>> {
     if (!job || this.closing || this.paused) {
       return;
     }
@@ -383,14 +581,15 @@ export class Worker<
 
     // end copy-paste from Bull3
 
-    const handleCompleted = async (result: R) => {
-      const jobData = await job.moveToCompleted(
+    const handleCompleted = async (result: ResultType) => {
+      const completed = await job.moveToCompleted(
         result,
         token,
         !(this.closing || this.paused),
       );
       this.emit('completed', job, result, 'active');
-      return jobData ? this.nextJobFromJobData(jobData[0], jobData[1]) : null;
+      const [jobData, jobId] = completed || [];
+      return this.nextJobFromJobData(jobData, jobId);
     };
 
     const handleFailed = async (err: Error) => {
@@ -398,7 +597,7 @@ export class Worker<
         await job.moveToFailed(err, token);
         this.emit('failed', job, err, 'active');
       } catch (err) {
-        this.emit('error', err);
+        this.emit('error', <Error>err);
         // It probably means that the job has lost the lock before completion
         // The QueueScheduler will (or already has) moved the job back
         // to the waiting list (as stalled)
@@ -409,35 +608,23 @@ export class Worker<
 
     lockExtender();
     try {
-      const result = await this.processFn(job, token);
+      const result = await this.callProcessJob(job, token);
       return await handleCompleted(result);
     } catch (err) {
-      return handleFailed(err);
+      return handleFailed(<Error>err);
     } finally {
       stopTimer();
     }
-
-    /*
-      var timeoutMs = job.opts.timeout;
-
-      if (timeoutMs) {
-        jobPromise = jobPromise.timeout(timeoutMs);
-      }
-    */
-    // Local event with jobPromise so that we can cancel job.
-    // this.emit('active', job, jobPromise, 'waiting');
-
-    // return jobPromise.then(handleCompleted).catch(handleFailed);
   }
 
   /**
    *
    * Pauses the processing of this queue only for this worker.
    */
-  async pause(doNotWaitActive?: boolean) {
+  async pause(doNotWaitActive?: boolean): Promise<void> {
     if (!this.paused) {
       this.paused = new Promise(resolve => {
-        this.resumeWorker = function() {
+        this.resumeWorker = function () {
           resolve();
           this.paused = null; // Allow pause to be checked externally for paused state.
           this.resumeWorker = null;
@@ -452,7 +639,7 @@ export class Worker<
    *
    * Resumes processing of this worker (if paused).
    */
-  resume() {
+  resume(): void {
     if (this.resumeWorker) {
       this.resumeWorker();
       this.emit('resumed');
@@ -474,7 +661,6 @@ export class Worker<
    * Checks if worker is currently running.
    *
    * @returns true if worker is running, false otherwise.
-   *
    */
   isRunning(): boolean {
     return this.running;
@@ -554,6 +740,7 @@ export class Worker<
       try {
         return await fn();
       } catch (err) {
+        this.emit('error', <Error>err);
         if (delayInMs) {
           await delay(delayInMs);
         } else {

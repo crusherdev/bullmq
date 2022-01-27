@@ -1,5 +1,4 @@
-import { RepeatOptions } from './repeat-options';
-import { BackoffOptions } from './backoff-options';
+import { RepeatOptions, KeepJobs, BackoffOptions } from './';
 
 export interface JobsOptions {
   /**
@@ -18,11 +17,13 @@ export interface JobsOptions {
    * An amount of milliseconds to wait until this job can be processed.
    * Note that for accurate delays, worker and producers
    * should have their clocks synchronized.
+   * @defaultValue 0
    */
   delay?: number;
 
   /**
    * The total number of attempts to try the job until it completes.
+   * @defaultValue 0
    */
   attempts?: number;
 
@@ -68,17 +69,19 @@ export interface JobsOptions {
   /**
    * If true, removes the job when it successfully completes
    * When given an number, it specifies the maximum amount of
-   * jobs to keep.
+   * jobs to keep, or you can provide an object specifying max
+   * age and/or count to keep.
    * Default behavior is to keep the job in the completed set.
    */
-  removeOnComplete?: boolean | number;
+  removeOnComplete?: boolean | number | KeepJobs;
 
   /**
    * If true, removes the job when it fails after all attempts.
    * When given an number, it specifies the maximum amount of
-   * jobs to keep.
+   * jobs to keep, or you can provide an object specifying max
+   * age and/or count to keep.
    */
-  removeOnFail?: boolean | number;
+  removeOnFail?: boolean | number | KeepJobs;
 
   /**
    * Limits the amount of stack trace lines that will be recorded in the stacktrace.
